@@ -21,8 +21,9 @@ class BernoulliDiffusionModel:
 
     def train_step(self, batch: dict) -> dict:
         """Single training step."""
-        noisy = batch["noisy"].to(self.device)
-        clean = batch["clean"].to(self.device)
+        rgb = batch["rgb"].to(self.device)
+        noisy_mask = batch["noisy_mask"].to(self.device)
+        clean_mask = batch["clean_mask"].to(self.device)
         timestep = batch["timestep"].to(self.device)
 
         self.optimizer.zero_grad()
@@ -30,23 +31,23 @@ class BernoulliDiffusionModel:
         # Forward pass
         if self.scaler is not None:
             with torch.cuda.amp.autocast():
-                pred_clean = self.model(noisy, timestep)
-                loss = F.mse_loss(pred_clean, clean)
+                pred_clean_mask = self.model(rgb, noisy_mask, timestep)
+                loss = F.mse_loss(pred_clean_mask, clean_mask)
 
             # Backward pass
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
-            pred_clean = self.model(noisy, timestep)
-            loss = F.mse_loss(pred_clean, clean)
+            pred_clean_mask = self.model(rgb, noisy_mask, timestep)
+            loss = F.mse_loss(pred_clean_mask, clean_mask)
             loss.backward()
             self.optimizer.step()
 
         return {
             "loss": loss.item(),
-            "pred": pred_clean.detach(),
-            "target": clean.detach(),
+            "pred": pred_clean_mask.detach(),
+            "target": clean_mask.detach(),
         }
 
     def save_checkpoint(self, path: str, epoch: int, loss: float):

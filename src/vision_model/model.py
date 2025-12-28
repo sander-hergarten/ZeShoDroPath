@@ -61,18 +61,26 @@ class ResidualBlock(nn.Module):
 
 
 class UNet(nn.Module):
-    """U-Net architecture for diffusion model."""
+    """U-Net architecture for diffusion model with RGB conditioning.
+    
+    Takes RGB image as conditioning and denoises a mask.
+    Input: RGB image (3 channels) + noisy mask (1 channel) = 4 channels total
+    Output: Denoised mask (1 channel)
+    """
 
     def __init__(
         self,
-        in_channels: int = 3,
-        out_channels: int = 3,
+        rgb_channels: int = 3,
+        mask_channels: int = 1,
+        out_channels: int = 1,
         base_channels: int = 64,
         time_emb_dim: int = 128,
         channel_multipliers: tuple = (1, 2, 4, 8),
     ):
         super().__init__()
         self.time_emb_dim = time_emb_dim
+        self.rgb_channels = rgb_channels
+        self.mask_channels = mask_channels
 
         # Time embedding
         self.time_mlp = nn.Sequential(
@@ -86,6 +94,8 @@ class UNet(nn.Module):
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
 
+        # Input channels: RGB (3) + mask (1) = 4
+        in_channels = rgb_channels + mask_channels
         channels = [in_channels] + [base_channels * m for m in channel_multipliers]
 
         # Encoder blocks
@@ -103,18 +113,24 @@ class UNet(nn.Module):
                 ResidualBlock(channels[i + 1] + channels[i], channels[i], time_emb_dim)
             )
 
-        # Output layer
+        # Output layer - outputs single channel mask
         self.out_norm = nn.GroupNorm(8, base_channels)
         self.out_conv = nn.Conv2d(base_channels, out_channels, 3, padding=1)
 
-    def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, rgb: torch.Tensor, noisy_mask: torch.Tensor, timestep: torch.Tensor
+    ) -> torch.Tensor:
         """
         Args:
-            x: (B, C, H, W) noisy image
+            rgb: (B, 3, H, W) RGB conditioning image
+            noisy_mask: (B, 1, H, W) noisy mask
             timestep: (B,) timestep tensor
         Returns:
-            (B, C, H, W) predicted clean image
+            (B, 1, H, W) predicted clean mask
         """
+        # Concatenate RGB and mask along channel dimension
+        x = torch.cat([rgb, noisy_mask], dim=1)  # (B, 4, H, W)
+
         # Time embedding
         t = self.time_mlp(timestep)
 
@@ -138,7 +154,7 @@ class UNet(nn.Module):
         # Output
         x = self.out_norm(x)
         x = F.siLU(x)
-        x = self.out_conv(x)
+        x = self.out_conv(x)  # (B, 1, H, W)
 
         return x
 
