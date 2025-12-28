@@ -2,16 +2,15 @@ mod image_processing;
 mod mean;
 
 use std::ops::Deref;
+use std::u16;
 use std::{
     cell::RefCell, collections::HashSet, fs, fs::File, io::Cursor, path::PathBuf, sync::Arc,
 };
 
-use arrow::array::{Array, BinaryBuilder, RecordBatch};
+use arrow::array::{Array, BinaryBuilder, RecordBatch, UInt16Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use futures::future::join_all;
-use image::{
-    DynamicImage, EncodableLayout, ImageBuffer, ImageReader, Pixel, PixelWithColorType, RgbImage,
-};
+use image::{DynamicImage, EncodableLayout, ImageBuffer, ImageReader, Pixel, PixelWithColorType};
 use itertools::Itertools;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
@@ -135,17 +134,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         processors = l_processors;
         let image_array = images_to_array(images, None);
 
-        masks
-            .into_iter()
-            .tuple_windows()
-            .for_each(|(clean, noisy)| {
-                let batch =
-                    RecordBatch::try_new(schema.clone(), vec![image_array.clone(), clean, noisy])
-                        .unwrap();
+        masks.into_iter().enumerate().tuple_windows().for_each(
+            |((timestamp, clean), (_, noisy))| {
+                let timestamp_array: UInt16Array =
+                    (0..clean.len()).map(|_| timestamp as u16).collect();
+                let batch = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        image_array.clone(),
+                        clean,
+                        noisy,
+                        Arc::new(timestamp_array) as Arc<dyn Array>,
+                    ],
+                )
+                .unwrap();
 
-                writer.write(&batch);
-                writer.flush();
-            });
+                writer.write(&batch).expect("schema_mismatch");
+                writer.flush().expect("idk");
+            },
+        );
     }
 
     // Finalize the Parquet file

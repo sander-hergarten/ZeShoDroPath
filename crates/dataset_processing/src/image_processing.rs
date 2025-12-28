@@ -1,4 +1,4 @@
-use image::{GrayImage, ImageBuffer, RgbImage, RgbaImage};
+use image::{GrayImage, ImageBuffer};
 use std::borrow::Cow;
 use wgpu::util::DeviceExt;
 
@@ -332,7 +332,6 @@ impl WgpuProcessor {
             height,
             padded_bytes_per_row,
             input_texture,
-            image_texture,
             output_texture,
             output_buffer,
             bind_group,
