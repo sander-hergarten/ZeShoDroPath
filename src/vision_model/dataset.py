@@ -1,6 +1,7 @@
 """Dataset loader for diffusion model training."""
 
 import io
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -33,7 +34,9 @@ class ImageDiffusionDataset(Dataset):
             rgb_transform: Optional transform for RGB images
             mask_transform: Optional transform for mask images
         """
-        self.dataset = load_dataset("parquet", data_files=parquet_file, split="train")
+        # Ensure parquet_file is a string and resolve to absolute path
+        parquet_path = str(Path(parquet_file).resolve())
+        self.dataset = load_dataset("parquet", data_files=parquet_path, split="train")
         self.image_size = image_size
         self.iteration_steps = iteration_steps
         self.num_mask_levels = iteration_steps  # image_1 to image_N

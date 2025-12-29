@@ -23,8 +23,8 @@ def train(
 ) -> None:
     """Train the diffusion model."""
     p_train.train(
-        parquet_file=parquet_file,
-        output_dir=output_dir,
+        parquet_file=str(parquet_file),
+        output_dir=str(output_dir),
         batch_size=batch_size,
         num_epochs=num_epochs,
         learning_rate=learning_rate,
