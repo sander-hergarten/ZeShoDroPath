@@ -35,13 +35,46 @@ class ResidualBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, time_emb_dim: int):
         super().__init__()
         self.time_mlp = nn.Linear(time_emb_dim, out_channels)
+
+        # GroupNorm requires num_groups to divide channels evenly
+        # Use min(8, channels) groups, but ensure it divides evenly
+        def get_num_groups(channels: int) -> int:
+            if channels <= 0:
+                return 1
+            # Always use 1 group as minimum
+            if channels == 1:
+                return 1
+            # Try to use up to 8 groups, but must divide evenly
+            max_groups = min(8, channels)
+            # Find the largest divisor of channels that's <= max_groups
+            for groups in range(max_groups, 0, -1):
+                if channels % groups == 0:
+                    return groups
+            # Fallback: always return 1 if no divisor found (shouldn't happen)
+            return 1
+
+        in_groups = get_num_groups(in_channels)
+        out_groups = get_num_groups(out_channels)
+
+        # Double-check that groups divide channels evenly (safety check)
+        if in_channels % in_groups != 0:
+            raise ValueError(
+                f"GroupNorm error: in_channels={in_channels} not divisible by "
+                f"in_groups={in_groups}. This should not happen!"
+            )
+        if out_channels % out_groups != 0:
+            raise ValueError(
+                f"GroupNorm error: out_channels={out_channels} not divisible by "
+                f"out_groups={out_groups}. This should not happen!"
+            )
+
         self.block1 = nn.Sequential(
-            nn.GroupNorm(8, in_channels),
+            nn.GroupNorm(in_groups, in_channels),
             nn.SiLU(),
             nn.Conv2d(in_channels, out_channels, 3, padding=1),
         )
         self.block2 = nn.Sequential(
-            nn.GroupNorm(8, out_channels),
+            nn.GroupNorm(out_groups, out_channels),
             nn.SiLU(),
             nn.Conv2d(out_channels, out_channels, 3, padding=1),
         )
@@ -62,7 +95,7 @@ class ResidualBlock(nn.Module):
 
 class UNet(nn.Module):
     """U-Net architecture for diffusion model with RGB conditioning.
-    
+
     Takes RGB image as conditioning and denoises a mask.
     Input: RGB image (3 channels) + noisy mask (1 channel) = 4 channels total
     Output: Denoised mask (1 channel)
@@ -75,7 +108,7 @@ class UNet(nn.Module):
         out_channels: int = 1,
         base_channels: int = 64,
         time_emb_dim: int = 128,
-        channel_multipliers: tuple = (1, 2, 4, 8),
+        channel_multipliers: tuple[int, int, int, int] = (8, 8, 12, 16),
     ):
         super().__init__()
         self.time_emb_dim = time_emb_dim
@@ -108,14 +141,51 @@ class UNet(nn.Module):
         self.bottleneck = ResidualBlock(channels[-1], channels[-1], time_emb_dim)
 
         # Decoder blocks
-        for i in reversed(range(len(channels) - 1)):
+        # After encoder: skip_connections stored in forward order
+        # After bottleneck: x has channels[-1] channels
+        # Decoder processes in reverse: pops skip connections from end
+        # Each decoder block: upsampled features + skip connection -> output
+        for j in range(len(channels) - 1):
+            # j goes 0 to len-2 (forward order for decoder list)
+            # skip_idx goes len-2 to 0 (reverse order, matching pop order)
+            skip_idx = len(channels) - 2 - j
+            # After upsampling: channels[skip_idx + 1] channels
+            # Skip connection: channels[skip_idx + 1] channels (from encoder output at that level)
+            # Combined input: channels[skip_idx + 1] * 2
+            # Output: channels[skip_idx]
+            input_channels = channels[skip_idx + 1] * 2
+            output_channels = channels[skip_idx]
             self.decoder.append(
-                ResidualBlock(channels[i + 1] + channels[i], channels[i], time_emb_dim)
+                ResidualBlock(input_channels, output_channels, time_emb_dim)
             )
 
         # Output layer - outputs single channel mask
-        self.out_norm = nn.GroupNorm(8, base_channels)
-        self.out_conv = nn.Conv2d(base_channels, out_channels, 3, padding=1)
+        # The decoder outputs channels[0] channels (same as input channels)
+        output_channels = channels[0]  # This is the actual output from decoder
+
+        # GroupNorm requires num_groups to divide channels evenly
+        def get_num_groups(channels: int) -> int:
+            if channels <= 0:
+                return 1
+            if channels == 1:
+                return 1
+            max_groups = min(8, channels)
+            for groups in range(max_groups, 0, -1):
+                if channels % groups == 0:
+                    return groups
+            return 1
+
+        out_norm_groups = get_num_groups(output_channels)
+
+        # Validate
+        if output_channels % out_norm_groups != 0:
+            raise ValueError(
+                f"Output normalization error: output_channels={output_channels} not divisible by "
+                f"out_norm_groups={out_norm_groups}. This should not happen!"
+            )
+
+        self.out_norm = nn.GroupNorm(out_norm_groups, output_channels)
+        self.out_conv = nn.Conv2d(output_channels, out_channels, 3, padding=1)
 
     def forward(
         self, rgb: torch.Tensor, noisy_mask: torch.Tensor, timestep: torch.Tensor
@@ -153,8 +223,7 @@ class UNet(nn.Module):
 
         # Output
         x = self.out_norm(x)
-        x = F.siLU(x)
+        x = F.silu(x)
         x = self.out_conv(x)  # (B, 1, H, W)
 
         return x
-

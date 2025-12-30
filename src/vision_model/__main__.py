@@ -20,8 +20,13 @@ def train(
     num_workers: int = 4,
     save_every: int = 10,
     iteration_steps: int = 10,
+    streaming: bool = True,
 ) -> None:
-    """Train the diffusion model."""
+    """Train the diffusion model.
+    
+    Args:
+        streaming: Use streaming mode for large datasets that don't fit in memory.
+    """
     p_train.train(
         parquet_file=str(parquet_file),
         output_dir=str(output_dir),
@@ -32,6 +37,7 @@ def train(
         num_workers=num_workers,
         save_every=save_every,
         iteration_steps=iteration_steps,
+        streaming=streaming,
     )
 
 

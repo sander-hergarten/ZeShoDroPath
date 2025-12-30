@@ -8,7 +8,7 @@ import tyro
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .dataset import ImageDiffusionDataset
+from .dataset import ImageDiffusionDataset, ImageDiffusionIterableDataset
 from .model import UNet
 from .trainer import BernoulliDiffusionModel
 
@@ -23,8 +23,14 @@ def train(
     num_workers: int = 4,
     save_every: int = 10,
     iteration_steps: int = 10,
+    streaming: bool = True,
 ):
-    """Train the diffusion model."""
+    """Train the diffusion model.
+
+    Args:
+        streaming: If True, use streaming mode for datasets that don't fit in memory.
+                   When streaming=True, shuffle is disabled and dataset length is unknown.
+    """
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -41,20 +47,36 @@ def train(
 
     # Dataset and dataloader
     print("Loading dataset...")
-    dataset = ImageDiffusionDataset(
-        parquet_file, image_size=image_size, iteration_steps=iteration_steps
-    )
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=device != "cpu",
-    )
+    if streaming:
+        print("Using streaming mode (dataset won't be loaded into memory)")
+        dataset = ImageDiffusionIterableDataset(
+            parquet_file, image_size=image_size, iteration_steps=iteration_steps
+        )
+        # For IterableDataset, shuffle must be False
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,  # IterableDataset doesn't support shuffle
+            num_workers=num_workers,
+            pin_memory=device != "cpu",
+        )
+        print("Dataset: Streaming (size unknown)")
+    else:
+        dataset = ImageDiffusionDataset(
+            parquet_file, image_size=image_size, iteration_steps=iteration_steps
+        )
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=device != "cpu",
+        )
+        print(f"Dataset size: {len(dataset)}")
 
-    print(f"Dataset size: {len(dataset)}")
     print(f"Batch size: {batch_size}")
-    print(f"Number of batches per epoch: {len(dataloader)}")
+    if not streaming:
+        print(f"Number of batches per epoch: {len(dataloader)}")
     print(f"Iteration steps: {iteration_steps}")
 
     # Model - RGB (3) + mask (1) = 4 input channels, 1 output channel
