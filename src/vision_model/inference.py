@@ -31,7 +31,7 @@ def load_model(
         channel_multipliers=(1, 2, 4, 8),
     )
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
     model.eval()
