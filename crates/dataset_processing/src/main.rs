@@ -2,7 +2,6 @@ mod image_processing;
 mod mean;
 
 use std::ops::Deref;
-use std::u16;
 use std::{
     cell::RefCell, collections::HashSet, fs, fs::File, io::Cursor, path::PathBuf, sync::Arc,
 };
@@ -102,11 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frame_progress = Progress::from_paths(frame_path_from_mask_path(&mask_paths));
     let mask_progress = Progress::from_paths(mask_paths);
     while let Some(masks_dyn) = load_batch_into_memory(&mask_progress) {
-        let images = load_batch_into_memory(&frame_progress)
+        let (_, images): (Vec<_>, Vec<_>) = load_batch_into_memory(&frame_progress)
             .unwrap()
             .into_iter()
-            .map(|(_, im)| im.to_rgb8())
-            .collect_vec();
+            .map(|(paths, im)| (paths, im.to_rgb8()))
+            .unzip();
 
         let masks = masks_dyn
             .into_iter()
@@ -191,6 +190,7 @@ fn load_batch_into_memory(progress: &Progress) -> Option<Vec<(PathBuf, DynamicIm
 
     Some(
         paths
+            .clone()
             .into_par_iter()
             .map(|path| {
                 (

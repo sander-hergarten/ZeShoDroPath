@@ -4,11 +4,14 @@ use wgpu::util::DeviceExt;
 
 // --- Structs ---
 
+// Updated to match WGSL layout alignment rules
+// alpha (4 bytes) + padding (4 bytes) + direction (8 bytes) = 16 bytes
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ShaderParams {
     alpha: f32,
-    _padding: [f32; 3],
+    _pad: u32,           // Padding to align 'direction' to 8 bytes
+    direction: [i32; 2], // vec2<i32>
 }
 
 pub struct WgpuProcessor {
@@ -16,7 +19,9 @@ pub struct WgpuProcessor {
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    param_buffer: wgpu::Buffer,
+    // We keep two separate buffers so we don't have to update them mid-frame
+    param_buffer_x: wgpu::Buffer,
+    param_buffer_y: wgpu::Buffer,
     resources: Option<GpuResources>,
 }
 
@@ -25,9 +30,11 @@ struct GpuResources {
     height: u32,
     padded_bytes_per_row: u32,
     input_texture: wgpu::Texture,
+    intermediate_texture: wgpu::Texture, // NEW: Temp storage for Pass 1 result
     output_texture: wgpu::Texture,
     output_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    bind_group_pass_1: wgpu::BindGroup, // Input -> Intermediate (Horizontal)
+    bind_group_pass_2: wgpu::BindGroup, // Intermediate -> Output (Vertical)
 }
 
 impl WgpuProcessor {
@@ -39,28 +46,40 @@ impl WgpuProcessor {
             .unwrap();
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
 
-        // 1. Compile Shader & Pipeline Layout (Done once)
+        // 1. Compile Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("masking_step.wgsl"))),
         });
 
-        // 2. Uniforms (Done once)
-        let params = ShaderParams {
+        // 2. Uniforms: Create two separate buffers for X and Y passes
+        let params_x = ShaderParams {
             alpha,
-            _padding: [0.0; 3],
+            _pad: 0,
+            direction: [1, 0], // Horizontal
         };
-        let param_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Params"),
-            contents: bytemuck::cast_slice(&[params]),
+        let param_buffer_x = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Params X"),
+            contents: bytemuck::cast_slice(&[params_x]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
 
-        // 3. Bind Group Layout (Defines the interface, not the specific textures)
+        let params_y = ShaderParams {
+            alpha,
+            _pad: 0,
+            direction: [0, 1], // Vertical
+        };
+        let param_buffer_y = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Params Y"),
+            contents: bytemuck::cast_slice(&[params_y]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        // 3. Bind Group Layout
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
-                // Binding 0: Input Texture
+                // Binding 0: Source Texture (texture_2d<f32>)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -71,7 +90,7 @@ impl WgpuProcessor {
                     },
                     count: None,
                 },
-                // Binding 1: Output Storage (RGBA8)
+                // Binding 1: Destination Storage (texture_storage_2d<rgba8unorm, write>)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -90,17 +109,6 @@ impl WgpuProcessor {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Binding 3: RGB Image Texture
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
                     },
                     count: None,
                 },
@@ -127,12 +135,12 @@ impl WgpuProcessor {
             queue,
             pipeline,
             bind_group_layout,
-            param_buffer,
+            param_buffer_x,
+            param_buffer_y,
             resources: None,
         }
     }
 
-    /// Process a batch of images sequentially, reusing GPU resources where possible.
     pub fn process_batch(&mut self, masks: &[GrayImage]) -> Vec<GrayImage> {
         let mut results = Vec::with_capacity(masks.len());
 
@@ -150,6 +158,7 @@ impl WgpuProcessor {
 
             let res = self.resources.as_ref().unwrap();
 
+            // 1. Upload Input Image
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &res.input_texture,
@@ -170,17 +179,30 @@ impl WgpuProcessor {
                 },
             );
 
+            // 2. Execute Two-Pass Blur
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+
             {
                 let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                 cpass.set_pipeline(&self.pipeline);
-                cpass.set_bind_group(0, &res.bind_group, &[]);
-                cpass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
+
+                let dispatch_x = width.div_ceil(16);
+                let dispatch_y = height.div_ceil(16);
+
+                // --- PASS 1: Horizontal (Input -> Intermediate) ---
+                cpass.set_bind_group(0, &res.bind_group_pass_1, &[]);
+                cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+
+                // --- PASS 2: Vertical (Intermediate -> Output) ---
+                // Note: We need a memory barrier here implicitly, but wgpu handles
+                // texture usage hazards between dispatches automatically in most cases.
+                cpass.set_bind_group(0, &res.bind_group_pass_2, &[]);
+                cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
             }
 
-            // --- 4. Copy to Buffer ---
+            // 3. Copy Result to Readback Buffer
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &res.output_texture,
@@ -205,7 +227,7 @@ impl WgpuProcessor {
 
             self.queue.submit(Some(encoder.finish()));
 
-            // --- 5. Map and Read (Polling Loop) ---
+            // 4. Readback
             let buffer_slice = res.output_buffer.slice(..);
             let (sender, mut receiver) = futures::channel::oneshot::channel();
             buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
@@ -215,22 +237,18 @@ impl WgpuProcessor {
                 if let Ok(Some(_)) = receiver.try_recv() {
                     break;
                 }
-                // Tiny sleep to prevent 100% CPU usage
                 std::thread::sleep(std::time::Duration::from_micros(100));
             }
 
             let data = buffer_slice.get_mapped_range();
-            let mut final_bytes = Vec::with_capacity((width * height * 3) as usize);
+            let mut final_bytes = Vec::with_capacity((width * height) as usize);
 
             for row in 0..height {
                 let start = (row * res.padded_bytes_per_row) as usize;
-                // Read row (RGBA pixels)
                 let row_data = &data[start..start + (width * 4) as usize];
-                // Extract RGB channels (skip alpha)
+                // Extract R channel from RGBA
                 for pixel in row_data.chunks(4) {
-                    final_bytes.push(pixel[0]); // R
-                    final_bytes.push(pixel[1]); // G
-                    final_bytes.push(pixel[2]); // B
+                    final_bytes.push(pixel[0]);
                 }
             }
             drop(data);
@@ -242,7 +260,6 @@ impl WgpuProcessor {
         results
     }
 
-    /// Helper to allocate textures and bind groups
     fn allocate_resources(&mut self, width: u32, height: u32) {
         println!("(Re)Allocating GPU resources for {}x{}", width, height);
 
@@ -252,6 +269,7 @@ impl WgpuProcessor {
             depth_or_array_layers: 1,
         };
 
+        // 1. Input Texture (R8Unorm)
         let input_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Input"),
             size: texture_size,
@@ -263,58 +281,81 @@ impl WgpuProcessor {
             view_formats: &[],
         });
 
-        let image_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("RGB Image"),
+        // 2. Intermediate Texture (Rgba8Unorm - must support storage write)
+        // This holds the result of the Horizontal pass
+        let intermediate_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Intermediate"),
             size: texture_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // Needs STORAGE for Pass 1 output, and TEXTURE_BINDING for Pass 2 input
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
 
+        // 3. Final Output Texture
         let output_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Output"),
             size: texture_size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm, // Still using the RGBA hack
+            format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
 
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Bind Group"),
+        // Create Views
+        let input_view = input_texture.create_view(&Default::default());
+        let intermediate_view = intermediate_texture.create_view(&Default::default());
+        let output_view = output_texture.create_view(&Default::default());
+
+        // --- Bind Group 1: Horizontal Pass ---
+        // Input: input_texture | Output: intermediate_texture | Params: param_buffer_x
+        let bind_group_pass_1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group Pass 1 (Horiz)"),
             layout: &self.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
-                        &input_texture.create_view(&Default::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&input_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &output_texture.create_view(&Default::default()),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(&intermediate_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.param_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(
-                        &image_texture.create_view(&Default::default()),
-                    ),
+                    resource: self.param_buffer_x.as_entire_binding(),
                 },
             ],
         });
 
-        // Calculate padding for readback
+        // --- Bind Group 2: Vertical Pass ---
+        // Input: intermediate_texture | Output: output_texture | Params: param_buffer_y
+        let bind_group_pass_2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bind Group Pass 2 (Vert)"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    // The output of pass 1 is the input of pass 2
+                    resource: wgpu::BindingResource::TextureView(&intermediate_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.param_buffer_y.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Buffer for Readback
         let unpadded_bytes_per_row = width * 4;
         let align = 256;
         let padding = (align - unpadded_bytes_per_row % align) % align;
@@ -332,9 +373,11 @@ impl WgpuProcessor {
             height,
             padded_bytes_per_row,
             input_texture,
+            intermediate_texture,
             output_texture,
             output_buffer,
-            bind_group,
+            bind_group_pass_1,
+            bind_group_pass_2,
         });
     }
 }
