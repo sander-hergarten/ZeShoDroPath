@@ -1,6 +1,6 @@
 # Environment Invariant Auto-Framing for Autonomous Drones
 Automating visual tasks with drones—whether for inspection, delivery, or media—requires GPS coordinates and Orientations. This project aims to generate these coordinates, with no human intervention, from just a single recording of the site (i.e. a flyover) and an image of the desired feature (packaging labels, QR-Codes, ...). 
-<br><\br>
+<br>
 ## How it works
 The small amount of inputs provided by the user requires a high use of synthetic data for visual encoder training. Traditionaly introduces the challenge of producing images that are acurate to the deployment environment. To overcome this we treat the task of encoding as a denoising problem and leverage diffusion models. This way we just need to reproduce common noise variants in our data which are significantly more general.
 
