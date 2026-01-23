@@ -5,18 +5,18 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12.4"
 dependencies = [
-    "datasets>=4.4.2",
-    "imageio[freeimage,opencv,pyav]>=2.37.2",
-    "matplotlib>=3.10.8",
-    "numpy>=2.3.5",
-    "opencv-python>=4.11.0.86",
-    "pillow>=12.0.0",
-    "pyarrow>=22.0.0",
-    "scipy>=1.16.3",
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "tqdm>=4.67.1",
-    "tyro>=1.0.2",
+  "datasets>=4.4.2",
+  "imageio[freeimage,opencv,pyav]>=2.37.2",
+  "matplotlib>=3.10.8",
+  "numpy>=2.3.5",
+  "opencv-python>=4.11.0.86",
+  "pillow>=12.0.0",
+  "pyarrow>=22.0.0",
+  "scipy>=1.16.3",
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  "tqdm>=4.67.1",
+  "tyro>=1.0.2",
 ]
 
 [[tool.uv.index]]

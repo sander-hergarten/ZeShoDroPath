@@ -74,9 +74,7 @@ def inference_from_dataset(
     device = (
         "cuda"
         if torch.cuda.is_available()
-        else "mps"
-        if torch.mps.is_available()
-        else "cpu"
+        else "mps" if torch.mps.is_available() else "cpu"
     )
     print(f"Using device: {device}")
 
@@ -158,9 +156,7 @@ def inference_from_files(
     device = (
         "cuda"
         if torch.cuda.is_available()
-        else "mps"
-        if torch.mps.is_available()
-        else "cpu"
+        else "mps" if torch.mps.is_available() else "cpu"
     )
     print(f"Using device: {device}")
 
@@ -264,4 +260,3 @@ if __name__ == "__main__":
             "files": main_files,
         }
     )
-

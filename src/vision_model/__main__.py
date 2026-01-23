@@ -23,7 +23,7 @@ def train(
     streaming: bool = True,
 ) -> None:
     """Train the diffusion model.
-    
+
     Args:
         streaming: Use streaming mode for large datasets that don't fit in memory.
     """
