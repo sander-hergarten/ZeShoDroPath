@@ -16,7 +16,6 @@ fn main(
     let y = global_id.y;
     let dims = textureDimensions(input_texture);
 
-    // 1. Load Pixel
     if (x < dims.x && y < dims.y) {
         sdata[local_idx] = textureLoad(input_texture, vec2<i32>(i32(x), i32(y)), 0).r;
     } else {
@@ -24,8 +23,6 @@ fn main(
     }
     workgroupBarrier();
 
-    // 2. Reduce (Sum 256 values -> 1 value)
-    // We unroll the loop for performance
     if (local_idx < 128u) { sdata[local_idx] += sdata[local_idx + 128u]; } workgroupBarrier();
     if (local_idx < 64u)  { sdata[local_idx] += sdata[local_idx + 64u]; }  workgroupBarrier();
     if (local_idx < 32u)  { sdata[local_idx] += sdata[local_idx + 32u]; }  workgroupBarrier();
@@ -35,7 +32,6 @@ fn main(
     if (local_idx < 2u)   { sdata[local_idx] += sdata[local_idx + 2u]; }   workgroupBarrier();
     if (local_idx < 1u)   { sdata[local_idx] += sdata[local_idx + 1u]; }   workgroupBarrier();
 
-    // 3. Write Output
     if (local_idx == 0u) {
         let output_index = group_id.y * num_groups.x + group_id.x;
         partial_sums[output_index] = sdata[0];

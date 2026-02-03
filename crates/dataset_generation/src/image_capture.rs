@@ -22,8 +22,9 @@ pub fn headless_setup(
     {
         let window = windows.single().unwrap();
         let width = window.resolution.physical_width();
-        let height = window.resolution.physical_height();
-        let half_width = width / 2;
+        let height = 512;
+        let half_width = 512;
+
         commands.spawn((
             Camera {
                 order: 1, // Set the main camera to render first
